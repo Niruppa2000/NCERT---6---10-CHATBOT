@@ -28,15 +28,15 @@ def load_models():
 embedder, tokenizer, model = load_models()
 
 # -----------------------------
-# Text Cleaning
+# Clean text
 # -----------------------------
 def clean_text(t):
     t = t.replace("\n", " ").replace("\x00", "")
-    t = " ".join(t.split())
-    return t
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
 
 # -----------------------------
-# PDF Loading
+# Load PDFs
 # -----------------------------
 def load_pdfs(uploaded_files):
     texts = []
@@ -44,70 +44,64 @@ def load_pdfs(uploaded_files):
         doc = fitz.open(stream=f.read(), filetype="pdf")
         for page in doc:
             t = clean_text(page.get_text())
-            if t and len(t.strip()) > 50:
-                texts.append(t.strip())
+            if len(t) > 80:
+                texts.append(t)
     return texts
 
 # -----------------------------
 # Chunking
 # -----------------------------
-def chunk_text(texts, size=300):
+def chunk_text(texts, size=280):
     chunks = []
     for t in texts:
         words = t.split()
         for i in range(0, len(words), size):
             c = " ".join(words[i:i+size])
-            if len(c) > 50:
+            if len(c) > 120:
                 chunks.append(c)
     return chunks
-
-def extract_keywords(question):
-    stop = {"what", "is", "the", "about", "explain", "process", "of", "and", "to", "in"}
-    words = re.findall(r"\w+", question.lower())
-    return [w for w in words if w not in stop and len(w) > 3]
-
 
 # -----------------------------
 # Embeddings
 # -----------------------------
 def build_embeddings(chunks):
-    emb = embedder.encode(chunks, normalize_embeddings=True)
-    return emb
+    return embedder.encode(chunks, normalize_embeddings=True)
 
+# -----------------------------
+# Keyword extraction
+# -----------------------------
+def extract_keywords(question):
+    stop = {"what", "is", "the", "about", "explain", "process", "of", "and", "to", "in"}
+    words = re.findall(r"\w+", question.lower())
+    return [w for w in words if w not in stop and len(w) > 3]
 
 # -----------------------------
 # Retrieval
 # -----------------------------
-def retrieve_context(question, chunks, embeddings, top_k=5):
+def retrieve_context(question, chunks, embeddings, top_k=6):
     keywords = extract_keywords(question)
 
-    # Prefer chunks containing keywords
-    filtered = []
-    for c in chunks:
-        text = c.lower()
-        if any(k in text for k in keywords):
-            filtered.append(c)
-
-    use_chunks = filtered if len(filtered) >= 5 else chunks
+    # Prefer keyword-matching chunks
+    filtered = [c for c in chunks if any(k in c.lower() for k in keywords)]
+    use_chunks = filtered if len(filtered) >= 3 else chunks
 
     use_embeddings = embedder.encode(use_chunks, normalize_embeddings=True)
-
     q_emb = embedder.encode([question], normalize_embeddings=True)[0]
+
     sims = np.dot(use_embeddings, q_emb)
     ranked = sims.argsort()[::-1]
 
     selected = []
     for idx in ranked:
-        if len(use_chunks[idx]) > 120:
-            selected.append(use_chunks[idx])
+        selected.append(use_chunks[idx])
         if len(selected) == top_k:
             break
 
     ctx = " ".join(selected)
     return clean_text(ctx)[:1800]
 
-
-# Enforce Numbered Points
+# -----------------------------
+# Enforce numbered points
 # -----------------------------
 def enforce_points(text):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -115,60 +109,30 @@ def enforce_points(text):
 
     for l in lines:
         l = re.sub(r"^[0-9]+[\.\)]\s*", "", l)
-        if len(l) > 10:
+        if len(l) > 20:
             points.append(l)
 
     if len(points) < 5:
         sentences = re.split(r"\.\s+", text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
         points = sentences[:5]
 
     if not points:
-        points = ["Information not found clearly in the textbook."]
+        return "⚠ Could not generate a clear answer from the uploaded textbook."
 
     while len(points) < 5:
         points.append(points[-1])
 
     return "\n".join([f"{i+1}. {p}." for i, p in enumerate(points[:5])])
-FALLBACK_ANSWERS = {
-    "fibre to fabric": [
-        "Fibre is the raw material used to make fabric.",
-        "Fibres can be natural like cotton and wool or synthetic like nylon.",
-        "Fibres are spun into yarn through a process called spinning.",
-        "Yarn is woven or knitted to make fabric.",
-        "Fabric is used to make clothes and many other useful items."
-    ],
-    "photosynthesis": [
-        "Photosynthesis is the process by which green plants make their own food.",
-        "It uses sunlight, carbon dioxide and water to produce glucose.",
-        "Chlorophyll helps in absorbing sunlight.",
-        "Oxygen is released as a by-product of photosynthesis.",
-        "This process is essential for plant growth and life on Earth."
-    ],
-    "democracy": [
-        "Democracy is a form of government in which people choose their leaders.",
-        "Citizens participate in decision making through elections.",
-        "The government is accountable to the people.",
-        "Democracy protects the rights and freedoms of citizens.",
-        "It promotes equality and justice in society."
-    ]
-}
-
 
 # -----------------------------
-# Answer Generation
+# Generate answer
 # -----------------------------
 def generate_answer(question, context):
-    q = question.lower()
-
-    for key in FALLBACK_ANSWERS:
-        if key in q:
-            return "\n".join([f"{i+1}. {p}." for i, p in enumerate(FALLBACK_ANSWERS[key])])
-
     prompt = f"""
-Using the textbook content below, answer the question.
+Answer ONLY from the textbook content below.
 
-Text:
+Textbook content:
 {context}
 
 Question:
@@ -184,18 +148,17 @@ Write exactly 5 short numbered points:
     with torch.no_grad():
         out = model.generate(
             **inputs,
-            max_new_tokens=220,
+            max_new_tokens=240,
             num_beams=4,
-            repetition_penalty=1.2,
+            repetition_penalty=1.3,
             no_repeat_ngram_size=3
         )
 
     raw = tokenizer.decode(out[0], skip_special_tokens=True)
     return enforce_points(raw)
 
-
 # -----------------------------
-# Streamlit UI
+# UI
 # -----------------------------
 st.sidebar.header("Upload NCERT PDFs")
 uploaded_files = st.sidebar.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True)
@@ -211,14 +174,10 @@ else:
 question = st.text_input("Ask a question:")
 
 if st.button("Get Answer") and question:
-    if chunks is None:
+    if not chunks:
         st.warning("Please upload NCERT PDFs first.")
     else:
         context = retrieve_context(question, chunks, embeddings)
         answer = generate_answer(question, context)
         st.markdown("### Answer")
         st.markdown(answer)
-
-
-
-
