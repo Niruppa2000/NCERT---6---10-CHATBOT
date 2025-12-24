@@ -65,19 +65,29 @@ def chunk_text(texts, size=300):
 # Embeddings
 # -----------------------------
 def build_embeddings(chunks):
-    return embedder.encode(chunks)
+    emb = embedder.encode(chunks, normalize_embeddings=True)
+    return emb
+
 
 # -----------------------------
 # Retrieval
 # -----------------------------
-def retrieve_context(question, chunks, embeddings, top_k=2):
-    q_emb = embedder.encode([question])[0]
-    sims = np.dot(embeddings, q_emb) / (np.linalg.norm(embeddings, axis=1) * np.linalg.norm(q_emb))
-    top_idx = sims.argsort()[-top_k:][::-1]
-    ctx = " ".join([chunks[i] for i in top_idx])
-    return clean_text(ctx)[:1500]
+def retrieve_context(question, chunks, embeddings, top_k=5):
+    q_emb = embedder.encode([question], normalize_embeddings=True)[0]
 
-# -----------------------------
+    sims = np.dot(embeddings, q_emb)
+    ranked = sims.argsort()[::-1]
+
+    selected = []
+    for idx in ranked:
+        if len(chunks[idx]) > 120:   # avoid tiny useless chunks
+            selected.append(chunks[idx])
+        if len(selected) == top_k:
+            break
+
+    ctx = " ".join(selected)
+    return clean_text(ctx)[:1800]
+
 # Enforce Numbered Points
 # -----------------------------
 def enforce_points(text):
@@ -155,3 +165,4 @@ if st.button("Get Answer") and question:
         answer = generate_answer(question, context)
         st.markdown("### Answer")
         st.markdown(answer)
+
