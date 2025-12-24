@@ -61,6 +61,12 @@ def chunk_text(texts, size=300):
                 chunks.append(c)
     return chunks
 
+def extract_keywords(question):
+    stop = {"what", "is", "the", "about", "explain", "process", "of", "and", "to", "in"}
+    words = re.findall(r"\w+", question.lower())
+    return [w for w in words if w not in stop and len(w) > 3]
+
+
 # -----------------------------
 # Embeddings
 # -----------------------------
@@ -73,20 +79,33 @@ def build_embeddings(chunks):
 # Retrieval
 # -----------------------------
 def retrieve_context(question, chunks, embeddings, top_k=5):
-    q_emb = embedder.encode([question], normalize_embeddings=True)[0]
+    keywords = extract_keywords(question)
 
-    sims = np.dot(embeddings, q_emb)
+    # Prefer chunks containing keywords
+    filtered = []
+    for c in chunks:
+        text = c.lower()
+        if any(k in text for k in keywords):
+            filtered.append(c)
+
+    use_chunks = filtered if len(filtered) >= 5 else chunks
+
+    use_embeddings = embedder.encode(use_chunks, normalize_embeddings=True)
+
+    q_emb = embedder.encode([question], normalize_embeddings=True)[0]
+    sims = np.dot(use_embeddings, q_emb)
     ranked = sims.argsort()[::-1]
 
     selected = []
     for idx in ranked:
-        if len(chunks[idx]) > 120:   # avoid tiny useless chunks
-            selected.append(chunks[idx])
+        if len(use_chunks[idx]) > 120:
+            selected.append(use_chunks[idx])
         if len(selected) == top_k:
             break
 
     ctx = " ".join(selected)
     return clean_text(ctx)[:1800]
+
 
 # Enforce Numbered Points
 # -----------------------------
@@ -165,4 +184,5 @@ if st.button("Get Answer") and question:
         answer = generate_answer(question, context)
         st.markdown("### Answer")
         st.markdown(answer)
+
 
