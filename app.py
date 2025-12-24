@@ -117,13 +117,15 @@ def enforce_points(text):
         sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
         points = sentences[:5]
 
+    # 🚨 Final safety
     if not points:
-        return "⚠ Could not generate a clear answer from the uploaded textbook."
+        return "⚠ Could not generate a clear answer from the textbook for this question."
 
     while len(points) < 5:
         points.append(points[-1])
 
-    return "\n".join([f"{i+1}. {p}." for i, p in enumerate(points[:5])])
+    return "\n".join([f"{i+1}. {p}." for i, p in enumerate(points)])
+
 
 # -----------------------------
 # Generate answer
@@ -181,3 +183,4 @@ if st.button("Get Answer") and question:
         answer = generate_answer(question, context)
         st.markdown("### Answer")
         st.markdown(answer)
+
