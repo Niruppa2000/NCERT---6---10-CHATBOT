@@ -2,6 +2,7 @@ import streamlit as st
 import torch
 import fitz
 import numpy as np
+import re
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
@@ -74,22 +75,45 @@ def retrieve_context(question, chunks, embeddings, top_k=2):
     sims = np.dot(embeddings, q_emb) / (np.linalg.norm(embeddings, axis=1) * np.linalg.norm(q_emb))
     top_idx = sims.argsort()[-top_k:][::-1]
     ctx = " ".join([chunks[i] for i in top_idx])
-    return clean_text(ctx)[:1500]  # limit context size
+    return clean_text(ctx)[:1500]
+
+# -----------------------------
+# Enforce Numbered Points
+# -----------------------------
+def enforce_points(text):
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    points = []
+
+    for l in lines:
+        l = re.sub(r"^[0-9]+[\.\)]\s*", "", l)
+        if len(l) > 10:
+            points.append(l)
+
+    if len(points) < 5:
+        sentences = re.split(r"\.\s+", text)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+        points = sentences[:5]
+
+    while len(points) < 5:
+        points.append(points[-1])
+
+    return "\n".join([f"{i+1}. {p}." for i, p in enumerate(points[:5])])
 
 # -----------------------------
 # Answer Generation
 # -----------------------------
 def generate_answer(question, context):
     prompt = f"""
-Answer the question using only the information below.
+Using the textbook content below, answer the question.
 
-Context:
+Text:
 {context}
 
 Question:
 {question}
 
-Give the answer in 5 numbered points.
+Write exactly 5 short numbered points:
+1.
 """
 
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
@@ -104,7 +128,8 @@ Give the answer in 5 numbered points.
             no_repeat_ngram_size=3
         )
 
-    return tokenizer.decode(out[0], skip_special_tokens=True)
+    raw = tokenizer.decode(out[0], skip_special_tokens=True)
+    return enforce_points(raw)
 
 # -----------------------------
 # Streamlit UI
