@@ -123,10 +123,14 @@ def enforce_points(text):
         sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
         points = sentences[:5]
 
+    if not points:
+        points = ["Information not found clearly in the textbook."]
+
     while len(points) < 5:
         points.append(points[-1])
 
     return "\n".join([f"{i+1}. {p}." for i, p in enumerate(points[:5])])
+
 
 # -----------------------------
 # Answer Generation
@@ -184,5 +188,6 @@ if st.button("Get Answer") and question:
         answer = generate_answer(question, context)
         st.markdown("### Answer")
         st.markdown(answer)
+
 
 
