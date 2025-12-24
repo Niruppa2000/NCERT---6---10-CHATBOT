@@ -1,20 +1,15 @@
 import streamlit as st
 import torch
 import fitz
-from sentence_transformers import SentenceTransformer, util
+import numpy as np
+from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-# -----------------------------
-# Page Config
-# -----------------------------
 st.set_page_config(page_title="NCERT Chatbot", layout="centered")
 st.title("📘 NCERT Class 6–10 Chatbot")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# -----------------------------
-# Load Models
-# -----------------------------
 @st.cache_resource
 def load_models():
     embedder = SentenceTransformer("all-MiniLM-L6-v2")
@@ -25,9 +20,6 @@ def load_models():
 
 embedder, tokenizer, model = load_models()
 
-# -----------------------------
-# PDF Loading
-# -----------------------------
 def load_pdfs(uploaded_files):
     texts = []
     for f in uploaded_files:
@@ -38,73 +30,71 @@ def load_pdfs(uploaded_files):
                 texts.append(t.strip())
     return texts
 
-# -----------------------------
-# Generation Helpers
-# -----------------------------
-def is_valid_point(text):
-    bad = ["song", "album", "movie", "celebrity", "actor", "singer", "released"]
-    return not any(b in text.lower() for b in bad)
+def chunk_text(texts, size=300):
+    chunks = []
+    for t in texts:
+        words = t.split()
+        for i in range(0, len(words), size):
+            c = " ".join(words[i:i+size])
+            if len(c) > 50:
+                chunks.append(c)
+    return chunks
 
-def generate_aspects(question):
-    aspects = {
-        "Definition": f"In school textbooks, what is {question}?",
-        "How": f"How does {question} work or what does it do?",
-        "Importance": f"Why is {question} important?",
-        "Example": f"Give one simple example or effect of {question}.",
-        "Conclusion": f"Summarize {question} in one line."
-    }
+def build_embeddings(chunks):
+    emb = embedder.encode(chunks)
+    return emb
 
-    results = {}
-    for key, q in aspects.items():
-        prompt = f"Answer using school-level academic knowledge only.\n{q}\nAnswer:"
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=128)
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+def retrieve_context(question, chunks, embeddings, top_k=2):
+    q_emb = embedder.encode([question])[0]
+    sims = np.dot(embeddings, q_emb) / (np.linalg.norm(embeddings, axis=1) * np.linalg.norm(q_emb))
+    top_idx = sims.argsort()[-top_k:][::-1]
+    return " ".join([chunks[i] for i in top_idx])
 
-        with torch.no_grad():
-            out = model.generate(**inputs, max_new_tokens=80, num_beams=3)
+def generate_answer(question, context):
+    prompt = f"""
+Use the following textbook content to answer the question.
 
-        results[key] = tokenizer.decode(out[0], skip_special_tokens=True).strip()
+Textbook content:
+{context}
 
-    return results
+Question:
+{question}
 
-def semantic_dedupe(points):
-    unique = []
-    for p in points:
-        if all(p.lower() not in u.lower() for u in unique):
-            unique.append(p)
-    return unique
+Answer in 5 short numbered points:
+"""
 
-def aspects_to_points(results):
-    points = []
-    for k in ["Definition", "How", "Importance", "Example", "Conclusion"]:
-        t = results.get(k, "").strip()
-        if t and is_valid_point(t):
-            points.append(t)
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    unique = semantic_dedupe(points)
+    with torch.no_grad():
+        out = model.generate(
+            **inputs,
+            max_new_tokens=200,
+            num_beams=4,
+            repetition_penalty=1.2,
+            no_repeat_ngram_size=3
+        )
 
-    while len(unique) < 5:
-        unique.append(unique[-1])
+    return tokenizer.decode(out[0], skip_special_tokens=True)
 
-    return "\n".join([f"{i+1}. {p}." for i, p in enumerate(unique[:5])])
-
-def generate_answer(question):
-    results = generate_aspects(question)
-    return aspects_to_points(results)
-
-# -----------------------------
-# Streamlit UI
-# -----------------------------
 st.sidebar.header("Upload NCERT PDFs")
 uploaded_files = st.sidebar.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
     texts = load_pdfs(uploaded_files)
-    st.sidebar.success(f"Loaded {len(texts)} pages from PDFs.")
+    chunks = chunk_text(texts)
+    embeddings = build_embeddings(chunks)
+    st.sidebar.success(f"Loaded {len(chunks)} chunks from PDFs.")
+else:
+    chunks, embeddings = None, None
 
 question = st.text_input("Ask a question:")
 
 if st.button("Get Answer") and question:
-    answer = generate_answer(question)
-    st.markdown("### Answer")
-    st.markdown(answer)
+    if chunks is None:
+        st.warning("Please upload NCERT PDFs first.")
+    else:
+        context = retrieve_context(question, chunks, embeddings)
+        answer = generate_answer(question, context)
+        st.markdown("### Answer")
+        st.markdown(answer)
