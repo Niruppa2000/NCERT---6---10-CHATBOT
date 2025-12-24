@@ -5,11 +5,17 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
+# -----------------------------
+# Page Config
+# -----------------------------
 st.set_page_config(page_title="NCERT Chatbot", layout="centered")
 st.title("📘 NCERT Class 6–10 Chatbot")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# -----------------------------
+# Load Models
+# -----------------------------
 @st.cache_resource
 def load_models():
     embedder = SentenceTransformer("all-MiniLM-L6-v2")
@@ -20,16 +26,30 @@ def load_models():
 
 embedder, tokenizer, model = load_models()
 
+# -----------------------------
+# Text Cleaning
+# -----------------------------
+def clean_text(t):
+    t = t.replace("\n", " ").replace("\x00", "")
+    t = " ".join(t.split())
+    return t
+
+# -----------------------------
+# PDF Loading
+# -----------------------------
 def load_pdfs(uploaded_files):
     texts = []
     for f in uploaded_files:
         doc = fitz.open(stream=f.read(), filetype="pdf")
         for page in doc:
-            t = page.get_text()
+            t = clean_text(page.get_text())
             if t and len(t.strip()) > 50:
                 texts.append(t.strip())
     return texts
 
+# -----------------------------
+# Chunking
+# -----------------------------
 def chunk_text(texts, size=300):
     chunks = []
     for t in texts:
@@ -40,27 +60,36 @@ def chunk_text(texts, size=300):
                 chunks.append(c)
     return chunks
 
+# -----------------------------
+# Embeddings
+# -----------------------------
 def build_embeddings(chunks):
-    emb = embedder.encode(chunks)
-    return emb
+    return embedder.encode(chunks)
 
+# -----------------------------
+# Retrieval
+# -----------------------------
 def retrieve_context(question, chunks, embeddings, top_k=2):
     q_emb = embedder.encode([question])[0]
     sims = np.dot(embeddings, q_emb) / (np.linalg.norm(embeddings, axis=1) * np.linalg.norm(q_emb))
     top_idx = sims.argsort()[-top_k:][::-1]
-    return " ".join([chunks[i] for i in top_idx])
+    ctx = " ".join([chunks[i] for i in top_idx])
+    return clean_text(ctx)[:1500]  # limit context size
 
+# -----------------------------
+# Answer Generation
+# -----------------------------
 def generate_answer(question, context):
     prompt = f"""
-Use the following textbook content to answer the question.
+Answer the question using only the information below.
 
-Textbook content:
+Context:
 {context}
 
 Question:
 {question}
 
-Answer in 5 short numbered points:
+Give the answer in 5 numbered points.
 """
 
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
@@ -69,7 +98,7 @@ Answer in 5 short numbered points:
     with torch.no_grad():
         out = model.generate(
             **inputs,
-            max_new_tokens=200,
+            max_new_tokens=220,
             num_beams=4,
             repetition_penalty=1.2,
             no_repeat_ngram_size=3
@@ -77,6 +106,9 @@ Answer in 5 short numbered points:
 
     return tokenizer.decode(out[0], skip_special_tokens=True)
 
+# -----------------------------
+# Streamlit UI
+# -----------------------------
 st.sidebar.header("Upload NCERT PDFs")
 uploaded_files = st.sidebar.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True)
 
