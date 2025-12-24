@@ -2,7 +2,6 @@ import streamlit as st
 import os, re
 import numpy as np
 from sentence_transformers import SentenceTransformer
-import faiss
 import fitz  # PyMuPDF
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
@@ -39,23 +38,22 @@ def load_pdfs(files):
     return texts
 
 # -----------------------
-# Build FAISS
+# Build embeddings
 # -----------------------
-def build_index(texts):
-    embeddings = embedder.encode(texts, convert_to_numpy=True)
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(embeddings)
-    return index, embeddings
+def embed_texts(texts):
+    return embedder.encode(texts, convert_to_numpy=True)
 
 # -----------------------
-# Retrieve context
+# Retrieve context using cosine similarity
 # -----------------------
-def retrieve_context(question, texts, index, k=5):
-    q_emb = embedder.encode([question], convert_to_numpy=True)
-    D, I = index.search(q_emb, k)
-    chunks = [texts[i] for i in I[0]]
+def retrieve_context(question, texts, embeddings, k=5):
+    q_emb = embedder.encode([question], convert_to_numpy=True)[0]
+    sims = embeddings @ q_emb / (np.linalg.norm(embeddings, axis=1) * np.linalg.norm(q_emb) + 1e-8)
+    top_idx = np.argsort(sims)[-k:][::-1]
 
-    # keyword filter to improve relevance
+    chunks = [texts[i] for i in top_idx]
+
+    # keyword overlap filter
     q_words = set(re.findall(r"\w+", question.lower()))
     filtered = []
     for c in chunks:
@@ -65,7 +63,7 @@ def retrieve_context(question, texts, index, k=5):
     return " ".join(filtered)[:3000]
 
 # -----------------------
-# Enforce 5 points, no duplicates, no crash
+# Enforce 5 points, no duplicates
 # -----------------------
 def enforce_points(text):
     text = re.sub(r"\s+", " ", text).strip()
@@ -116,19 +114,17 @@ Question:
 st.set_page_config(page_title="NCERT Class 6–10 Chatbot", layout="wide")
 st.title("📘 NCERT Class 6–10 Chatbot")
 
-uploaded_files = st.sidebar.file_uploader(
-    "Upload NCERT PDFs", type="pdf", accept_multiple_files=True
-)
+uploaded_files = st.sidebar.file_uploader("Upload NCERT PDFs", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
     texts = load_pdfs(uploaded_files)
-    index, _ = build_index(texts)
+    embeddings = embed_texts(texts)
     st.sidebar.success(f"Loaded {len(texts)} chunks from PDFs.")
 
 question = st.text_input("Ask a question:")
 
 if st.button("Get Answer") and uploaded_files and question:
-    context = retrieve_context(question, texts, index)
+    context = retrieve_context(question, texts, embeddings)
     answer = generate_answer(question, context)
     st.markdown("### Answer")
     st.text(answer)
